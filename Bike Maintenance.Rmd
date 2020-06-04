@@ -1,0 +1,171 @@
+---
+title: "Better Management of Bycicle Fleet"
+output: 
+  powerpoint_presentation:
+      reference_doc: Bikes_Template.pptx
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+library(tidyverse)
+library(tidymodels)
+library(lubridate)
+library(ggthemes)
+library(Hmisc)
+
+
+## Data dictionary for original file
+#- instant: record index
+#- dteday : date
+#- season : season (1:winter, 2:spring, 3:summer, 4:fall)
+#- yr : year (0: 2011, 1:2012)
+#- mnth : month ( 1 to 12)
+#- hr : hour (0 to 23)
+#- holiday : weather day is holiday or not (extracted from [Web Link])
+#- weekday : day of the week
+#- workingday : if day is neither weekend nor holiday is 1, otherwise is 0.
+#+ weathersit :
+#- 1: Clear, Few clouds, Partly cloudy, Partly cloudy
+#- 2: Mist + Cloudy, Mist + Broken clouds, Mist + Few clouds, Mist
+#- 3: Light Snow, Light Rain + Thunderstorm + Scattered clouds, Light Rain + Scattered clouds
+#- 4: Heavy Rain + Ice Pallets + Thunderstorm + Mist, Snow + Fog
+#- temp : Normalized temperature in Celsius. The values are derived via (t-t_min)/(t_max-t_min), t_min=-8, t_max=+39 (only in hourly scale)
+#- atemp: Normalized feeling temperature in Celsius. The values are derived via (t-t_min)/(t_max-t_min), t_min=-16, t_max=+50 (only in hourly scale)
+#- hum: Normalized humidity. The values are divided to 100 (max)
+#- windspeed: Normalized wind speed. The values are divided to 67 (max)
+#- casual: count of casual users
+#- registered: count of registered users
+#- cnt: count of total rental bikes including both casual and registered 
+
+## variables for calculation
+
+### Heat Index Model - https://en.wikipedia.org/wiki/Heat_index
+
+    c1 = -8.78469475556
+    c2 = 1.61139411
+    c3 = 2.33854883889
+    c4 = -0.14611605
+    c5 = -0.012308094
+    c6 = -0.0164248277778
+    c7 = 0.002211732
+    c8 = 0.00072546
+    c9 = -0.000003582
+    
+    
+#Windchill model    - https://en.wikipedia.org/wiki/Wind_chill
+    w1<-13.1
+    w2<-0.6215
+    w3<-11.37
+    w4<-0.3965
+    
+#Data de-normalisation
+    
+    t_min <- -8
+    t_max <- 39
+    h_max<-100
+    
+#Auxiliary Data
+    
+seasons <- tibble(season=1:4,
+                  season_name=c("winter","spring","summer","autumn"))
+weather_situation <- tibble(weathersit=1:4,
+                            situation=c("Clear, Few clouds, Partly cloudy, Partly cloudy",
+                                        "Mist + Cloudy, Mist + Broken clouds, Mist + Few clouds, Mist",
+                                        "Light Snow, Light Rain + Thunderstorm + Scattered clouds, Light Rain + Scattered clouds",
+                                        "Heavy Rain + Ice Pallets + Thunderstorm + Mist, Snow + Fog"),
+                good_wsit=c(TRUE,TRUE,FALSE,FALSE))
+    
+
+```
+
+```{r get_data,include=FALSE}
+
+###only get data if does not exist already in rds file
+
+if(!(file.exists("bike_data.rds"))){
+
+    temp <- tempfile()
+    url <- "https://archive.ics.uci.edu/ml/machine-learning-databases/00275/Bike-Sharing-Dataset.zip"
+
+    download.file(url,temp,method='wget')
+    bike_data <- read_csv(unz(temp, "hour.csv"))
+    saveRDS(bike_data,file="bike_data.rds")
+    unlink(temp)
+
+}else{
+  bike_data<-readRDS("bike_data.rds")
+}
+```
+
+
+```{r edit_data, include=FALSE}
+bike_mod <- bike_data %>% group_by(dteday) %>% summarise(casual=sum(casual),
+                                             registered=sum(registered),
+                                             total=casual+registered,
+                                             avg_temp=mean(temp)*(t_max-t_min)+t_min,
+                                             min_temp=min(temp)*(t_max-t_min)+t_min,
+                                             max_temp=max(temp)*(t_max-t_min)+t_min,
+                                             avg_hum=mean(hum),
+                                             min_hum=min(hum),
+                                             max_hum=max(hum),
+                                             avg_windspeed=mean(windspeed)*67,
+                                             max_windspeed=max(windspeed)*67,
+                                             med_windspeed=median(windspeed)*67,
+                                             weathersit=max(weathersit),
+                                             season=max(season),
+                                             holiday=max(holiday)) %>%
+  mutate(HI=c1+c2*max_temp+c3*avg_hum+c4*max_temp*avg_hum+c5*max_temp^2+
+                             c6+avg_hum^2+c7*max_temp^2*avg_hum+c8*max_temp*avg_hum^2+
+                             c9*max_temp^2*avg_hum^2,
+         wc=w1+w2*min_temp-w3*max_windspeed^(0.16)+w4*min_temp*max_windspeed^(0.16),
+         too_hot=(HI>=32),
+         too_cold=(wc<0),
+         too_windy=(med_windspeed>20),
+         too_rainy=(max_hum>0.9))  %>%
+  ungroup() %>%
+   left_join(seasons,by="season") %>% left_join(weather_situation,by="weathersit") %>%
+  mutate(day=wday(dteday,label=TRUE),
+         day_nbr=wday(dteday,label=FALSE),
+         month=month(dteday,label=TRUE),
+         holiday=(holiday==1)) %>%
+  mutate(GoodWeather=ifelse(!too_hot & !too_cold & !too_windy & !too_rainy,"Yes","No")) %>%
+  select(-total) %>% pivot_longer(2:3,names_to="type",values_to="quantity") 
+  
+bike_mod$GoodWeather <-  factor(bike_mod$GoodWeather, levels=c('Yes','No'))
+bike_mod$type <-  factor(bike_mod$type, levels=c('registered','casual'))
+bike_mod$season_name <-  factor(bike_mod$season_name, levels=c('winter','spring','summer','autumn'))
+```
+
+## Test Slide
+
+asdsfear
+
+## Problem Statement
+:::::: {.columns}
+::: {.column width="40%"}
+Content of the left column.
+:::
+::: {.column width="60%"}
+```{r problem_statement_chart,dpi = 800,  echo = FALSE}
+bike_mod %>%
+  ggplot(aes(x=day,y=quantity,color=GoodWeather, group=1)) +
+ # geom_point() + 
+  #stat_smooth(size = 1.5) +
+  #geom_smooth(method = loess ,formula = y ~ x,
+  #          stat = 'summary', alpha = 0.4, fill = 'gray70', color = 'gray70',
+  #          fun.data = median_hilow, fun.args = list(conf.int = 1)) +
+  geom_jitter(shape=16, position=position_jitter(0.2)) +
+  facet_grid(type ~ season_name) +
+ theme_fivethirtyeight() + 
+  scale_shape_tableau() +
+  scale_colour_tableau('Classic Color Blind') +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90, hjust = 1),
+        plot.title = element_text(size=14)) +
+  labs(title="Bike Demand per Season and User Type",
+       x="Day of the Week",
+       y="Bikes Rented") 
+```
+:::
+::::::
+
