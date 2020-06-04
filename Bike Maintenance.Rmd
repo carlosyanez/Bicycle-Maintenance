@@ -1,5 +1,5 @@
 ---
-title: "Better Management of Bycicle Fleet"
+title: "Better Management of Bicycle Fleet"
 output: 
   powerpoint_presentation:
       reference_doc: Bikes_Template.pptx
@@ -7,11 +7,23 @@ output:
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = FALSE)
+rm(list=ls(all=TRUE))
+
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(tidymodels)) install.packages("tidymodels", repos = "http://cran.us.r-project.org")
+if(!require(lubridate)) install.packages("lubridate", repos = "http://cran.us.r-project.org")
+if(!require(ggthemes)) install.packages("ggthemes", repunios = "http://cran.us.r-project.org")
+if(!require(patchwork)) install.packages("patchwork", repos = "http://cran.us.r-project.org")
+if(!require(gridtext)) install.packages("gridtext", repos = "http://cran.us.r-project.org")
+if(!require(grid)) install.packages("grid", repos = "http://cran.us.r-project.org")
+
 library(tidyverse)
 library(tidymodels)
 library(lubridate)
 library(ggthemes)
-library(Hmisc)
+library(patchwork)
+library(grid)
+library(gridtext)
 
 
 ## Data dictionary for original file
@@ -128,44 +140,81 @@ bike_mod <- bike_data %>% group_by(dteday) %>% summarise(casual=sum(casual),
          day_nbr=wday(dteday,label=FALSE),
          month=month(dteday,label=TRUE),
          holiday=(holiday==1)) %>%
-  mutate(GoodWeather=ifelse(!too_hot & !too_cold & !too_windy & !too_rainy,"Yes","No")) %>%
+  mutate(Weather=ifelse(!too_hot & !too_cold & !too_windy & !too_rainy,'Good','Bad')) %>%
   select(-total) %>% pivot_longer(2:3,names_to="type",values_to="quantity") 
   
-bike_mod$GoodWeather <-  factor(bike_mod$GoodWeather, levels=c('Yes','No'))
+bike_mod$Weather <-  factor(bike_mod$Weather, levels=c('Good','Bad'))
 bike_mod$type <-  factor(bike_mod$type, levels=c('registered','casual'))
 bike_mod$season_name <-  factor(bike_mod$season_name, levels=c('winter','spring','summer','autumn'))
 ```
 
-## Test Slide
-
-asdsfear
-
-## Problem Statement
+## Fleet maintenance volumes and windows need to be carefully chosen
 :::::: {.columns}
 ::: {.column width="40%"}
-Content of the left column.
+
+In order to **<span style='color:brown;'>provide a good service</span>** for the users of the bike sharing scheme, **<span style='color:brown;'>unavailability needs to be avoided</span>**, either by lack of maintenance or lack of supply. Thus, maintenance windows need to be selected **<span style='color:brown;'>smartly</span>**.
+
+- Shared bikes are **<span style='color:brown;'>used every day of the week</span>**. Registered users provide a constant demand baseline.
+- There is **<span style='color:brown;'>some seasonality</span>** in the demand: registered users brave through the winter keeping a the numbers high.
+- At first look, it seems that **<span style='color:brown;'>weather conditions are the biggest deterrent</span>** for bike usage. If it is too cold, or too hot or too windy casual users won't ride; registered users' numbers will also drop.
+- Bikes will **<span style='color:brown;'>keep breaking</span>** - even if they are well built! Thus, **<span style='color:brown;'>every opportunity</span>** to undertake maintenance **<span style='color:brown;'>needs to be taken</span>**.
 :::
 ::: {.column width="60%"}
-```{r problem_statement_chart,dpi = 800,  echo = FALSE}
-bike_mod %>%
-  ggplot(aes(x=day,y=quantity,color=GoodWeather, group=1)) +
- # geom_point() + 
-  #stat_smooth(size = 1.5) +
-  #geom_smooth(method = loess ,formula = y ~ x,
-  #          stat = 'summary', alpha = 0.4, fill = 'gray70', color = 'gray70',
-  #          fun.data = median_hilow, fun.args = list(conf.int = 1)) +
+```{r problem_statement_chart,dpi = 800, dev.args = list(bg = 'transparent'), echo = FALSE}
+
+text_value <-   "**<span style='color:brown;'>Challenge</span>**: Using data analytics, we can leverage the **<span style='color:brown;'>weather forecast </span>** to optimise the fleet **<span style='color:brown;'>maintenace without compromising availibilty SLAs</span>**."
+
+g <-bike_mod %>%
+  ggplot(aes(x=day,y=quantity,color=Weather, group=1)) +
   geom_jitter(shape=16, position=position_jitter(0.2)) +
-  facet_grid(type ~ season_name) +
+  facet_grid(type ~ season_name, space='free_y') +
  theme_fivethirtyeight() + 
   scale_shape_tableau() +
   scale_colour_tableau('Classic Color Blind') +
+  scale_y_continuous(labels = comma) +
   theme(legend.position = "bottom",
-        axis.text.x = element_text(angle = 90, hjust = 1),
-        plot.title = element_text(size=14)) +
+        plot.title = element_text(size=14),
+        axis.title.x = element_text(size = 10),
+        axis.text.x = element_text(angle = 90, hjust = 1,size = 8),
+        axis.title.y = element_text(size = 10),
+        axis.text.y = element_text(size = 8),
+        strip.text.x = element_text(size = 8),
+        strip.text.y = element_text(size = 8, angle = 90),
+        legend.title=element_text(size=8),
+        legend.text=element_text(size=8)) +
   labs(title="Bike Demand per Season and User Type",
        x="Day of the Week",
-       y="Bikes Rented") 
+       y="Bikes Rented") +
+  guides(col = guide_legend(ncol = 2),fill = guide_legend(title = "Weather", title.position = "left"))
+
+
+t<-  textbox_grob(
+  text_value,
+  gp = gpar(fontsize = 12),
+  box_gp = gpar(col = "grey80", fill = NA,lineend="round",lwd=3),
+  r = unit(10, "pt"),
+  padding = unit(c(10, 10, 10, 10), "pt"),
+  width = unit(1, "npc"),
+#  height  = unit(1, "npc"),
+  margin = unit(c(10, 10,10, 10), "pt")
+)
+
+layout <- "
+AAAA
+AAAA
+AAAA
+AAAA
+AAAA
+####
+CCCC
+CCCC
+"
+g + t + plot_layout(design = layout) 
+
+
+
 ```
+
 :::
 ::::::
 
