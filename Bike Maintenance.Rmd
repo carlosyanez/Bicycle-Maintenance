@@ -152,10 +152,10 @@ bike_mod$season_name <-  factor(bike_mod$season_name, levels=c('winter','spring'
 :::::: {.columns}
 ::: {.column width="40%"}
 
-In order to **<span style='color:brown;'>provide a good service</span>** for the users of the bike sharing scheme, **<span style='color:brown;'>unavailability needs to be avoided</span>**, either by lack of maintenance or lack of supply. Thus, maintenance windows need to be selected **<span style='color:brown;'>smartly</span>**.
+In order to **<span style='color:brown;'>provide a good service</span>** for the users of the bike sharing scheme, **<span style='color:brown;'>unavailability needs to be avoided</span>**. Unavailability is caused by lack of maintenance or lack of supply. Thus, maintenance windows need to be selected **<span style='color:brown;'>smartly</span>**.
 
 - Shared bikes are **<span style='color:brown;'>used every day of the week</span>**. Registered users provide a constant demand baseline.
-- There is **<span style='color:brown;'>some seasonality</span>** in the demand: registered users brave through the winter keeping a the numbers high.
+- There is **<span style='color:brown;'>some seasonality</span>** in the demand: registered users brave through the winter keeping the numbers high.
 - At first look, it seems that **<span style='color:brown;'>weather conditions are the biggest deterrent</span>** for bike usage. If it is too cold, or too hot or too windy casual users won't ride; registered users' numbers will also drop.
 - Bikes will **<span style='color:brown;'>keep breaking</span>** - even if they are well built! Thus, **<span style='color:brown;'>every opportunity</span>** to undertake maintenance **<span style='color:brown;'>needs to be taken</span>**.
 :::
