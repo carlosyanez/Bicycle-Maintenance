@@ -4,3 +4,12 @@
 bike_data.rds
 *.pptx
 .Rhistory
+*.RDS
+*.csv
+bike-sharing-4196725_1920.jpg
+bike_stations.json
+weather/.DS_Store
+.DS_Store
+.RDataTmp
+.RData
+*.png
