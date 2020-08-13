@@ -142,7 +142,18 @@ if(file.exists("weather_data.RDS")){
             WT08=sum(WT08,na.rm = TRUE), #WT08 - Smoke or haze
             WT09=sum(as.numeric(WT09),na.rm = TRUE), #WT09 - Blowing or drifting snow
             WT11=sum(WT11,na.rm = TRUE), #WT11 - High or damaging winds
-            )  %>%  mutate(Date=as_date(parse_date_time(DATE, orders = "Y-m-d"))) %>% select(-DATE)
+            .groups = 'drop')  %>% 
+            mutate(WT01=if_else(is.na(WT01),0,WT01),
+                   WT02=if_else(is.na(WT02),0,WT01),
+                   WT03=if_else(is.na(WT03),0,WT01),
+                   WT04=if_else(is.na(WT04),0,WT01),
+                   WT05=if_else(is.na(WT05),0,WT01),
+                   WT06=if_else(is.na(WT06),0,WT01),
+                   WT08=if_else(is.na(WT08),0,WT01),
+                   WT09=if_else(is.na(WT09),0,WT01),
+                   WT11=if_else(is.na(WT11),0,WT01),
+            ) %>%
+            mutate(Date=as_date(parse_date_time(DATE, orders = "Y-m-d"))) %>% select(-DATE)
   
     weather_data <- weather_data %>% group_by(DATE) %>%
     summarise(TAVG=median(TAVG,na.rm = TRUE), #avg temp
@@ -162,7 +173,18 @@ if(file.exists("weather_data.RDS")){
             WT08=sum(WT08,na.rm = TRUE), #WT08 - Smoke or haze
             WT09=sum(as.numeric(WT09),na.rm = TRUE), #WT09 - Blowing or drifting snow
             WT11=sum(WT11,na.rm = TRUE), #WT11 - High or damaging winds
-            )  %>%  mutate(Date=as_date(parse_date_time(DATE, orders = "Y-m-d"))) %>% select(-DATE)
+            .groups = 'drop') %>% 
+            mutate(WT01=if_else(is.na(WT01),0,WT01),
+                   WT02=if_else(is.na(WT02),0,WT01),
+                   WT03=if_else(is.na(WT03),0,WT01),
+                   WT04=if_else(is.na(WT04),0,WT01),
+                   WT05=if_else(is.na(WT05),0,WT01),
+                   WT06=if_else(is.na(WT06),0,WT01),
+                   WT08=if_else(is.na(WT08),0,WT01),
+                   WT09=if_else(is.na(WT09),0,WT01),
+                   WT11=if_else(is.na(WT11),0,WT01),
+            ) %>%
+            mutate(Date=as_date(parse_date_time(DATE, orders = "Y-m-d"))) %>% select(-DATE)
   
   saveRDS(weather_data_station,"weather_data_station.RDS")  
   saveRDS(weather_data,"weather_data.RDS")
@@ -198,12 +220,12 @@ station_daily <- trip_data %>%
   mutate(Date=as_date(`Start date`),
          `Start station number`=as.numeric(`Start station number`)) %>% 
   group_by(Date,`Start station number`,`End station number`) %>%
-  summarise(n=n()) %>% ungroup() 
+  summarise(n=n(),.groups = 'drop') %>% ungroup() 
 
 
 station_demand <- station_daily  %>%  mutate(Station=`Start station number`) %>%
   group_by(Date,Station) %>%
-  summarise(n=sum(n)) %>% ungroup() %>%
+  summarise(n=sum(n),.groups = 'drop') %>% ungroup() %>%
   mutate(season = metR::season(lubridate::month(Date))) %>%
   left_join(seasons, by="season") %>% select(-season) %>%
   left_join(public_holidays,by="Date") %>%
@@ -213,7 +235,7 @@ station_demand <- station_daily  %>%  mutate(Station=`Start station number`) %>%
          free_day = ifelse(weekend |public_holiday,"Non-working day","Working day")
          ) %>%
   group_by(free_day,season,Station) %>%
-  summarise(daily_avg=mean(n)) %>% 
+  summarise(daily_avg=mean(n),.groups = 'drop') %>% 
   mutate(Type="Start") %>%
   arrange(-daily_avg) %>% ungroup() %>%
   left_join((as.data.frame(bike_stations) %>% 
@@ -224,10 +246,10 @@ station_demand <- station_daily  %>%  mutate(Station=`Start station number`) %>%
 
 workshop<- station_daily %>% filter(`Start station number`==0) %>% 
   group_by(Date) %>%
-  summarise(In=sum(n)) %>%
+  summarise(In=sum(n),.groups = 'drop') %>%
   left_join( station_daily %>% filter(`End station number`==0) %>% 
   group_by(Date) %>%
-  summarise(Out=sum(n)), by="Date")
+  summarise(Out=sum(n),.groups = 'drop'), by="Date")
 
 
 stat <- trip_data %>% mutate(year=lubridate::year(`Start date`)) %>% filter(year==2017)
@@ -304,19 +326,21 @@ In order to **<span style='color: brown;'>provide a good service</span>** for th
 ::: {.column width="60%"}
 
 ```{r problem_statement_chart,dpi = 800, dev.args = list(bg = 'transparent'), echo = FALSE}
-
 text_value <-   "**<span style='color: brown;'>Challenge</span>**: Using data analytics, we can leverage the **<span style='color: brown;'>weather forecast </span>** to optimise the fleet **<span style='color: brown;'>maintenace without compromising availibilty SLAs</span>**."
 
+
  daily_demand <- trip_data %>% mutate(Date =as_date(`Start date`)) %>% 
-  group_by(Date,`Member type`) %>% summarise(n=n()) %>%
+  group_by(Date,`Member type`) %>% summarise(n=n(),.groups = 'drop') %>%
   pivot_wider(id_cols = Date,names_from = `Member type`,values_from = n) %>%
    left_join(public_holidays,by="Date") %>%
   mutate(Total=Casual+Member,
          day=lubridate::wday(Date,label=TRUE),
          weekend=if_else((day %in% c("Sat","Sun")),TRUE,FALSE),
-         season = seasons[which(metR::season(month(Date))==seasons$season),]$season_name,
+         season=metR::season(month(Date)),
          public_holiday=if_else(is.na(Event),FALSE,TRUE,missing=FALSE)
          ) %>%
+  left_join(seasons,by="season") %>%
+  mutate(season=season_name) %>% select(-season_name) %>%
   left_join(weather_data,by="Date") %>%
   mutate(too_hot=(TMAX>=35 | TAVG>=30),
          too_cold=(TMIN<=-5 | TAVG<=4),
@@ -332,8 +356,10 @@ text_value <-   "**<span style='color: brown;'>Challenge</span>**: Using data an
                      WT09>3 |
                      WT11>0, TRUE,FALSE),
          Good_Weather=ifelse(!too_hot & !too_cold & !too_windy & !too_rainy & !too_bad,'Good','Bad')
-  ) %>% pivot_longer(cols=c("Casual","Member"),names_to = "type", values_to = "trips") %>% select(-Total)
-
+  ) %>%
+   pivot_longer(cols=c("Casual","Member"),names_to = "type", values_to = "trips") %>%
+   select(-Total) 
+ 
 daily_demand$Good_Weather <-  factor(daily_demand$Good_Weather, levels=c('Good','Bad'))
 daily_demand$type <-  factor(daily_demand$type, levels=c('Casual','Member'))
 daily_demand$season <-  factor(daily_demand$season, levels=c('winter','spring','summer','autumn'))
@@ -411,12 +437,12 @@ When those bike are taken out for service, they can be replaced with lower used 
 ```{r bike usage, dpi = 800, dev.args = list(bg = 'transparent')}
 t<- trip_data %>% mutate(Date=as_date(`Start date`)) %>%
   group_by(Date,`Bike number`) %>%
-  summarise(trips=n()) %>% ungroup()
+  summarise(trips=n(),.groups = 'drop') %>% ungroup()
   
 t<- t %>% mutate(Month=format(as.Date(Date), "%Y-%m")) %>%
   filter(Month %in% c("2017-05","2017-06","2017-07","2017-08"))
 
-selection <- t %>% group_by(`Bike number`) %>% summarise(n=n()) %>% ungroup() %>% arrange(-n)
+selection <- t %>% group_by(`Bike number`) %>% summarise(n=n(),.groups = 'drop') %>% ungroup() %>% arrange(-n)
 
 
 selection2 <- rbind(rbind(selection[1:7,],
@@ -505,32 +531,7 @@ These metrics (combined with spontaneous failure rates) should serve as input fo
 :::
 ::::::
 
-
-## Next Steps
-:::::: {.columns}
-::: {.column width="40%"}
-
-The next steps on this journey are:
-
-- Source all missing data.
-- Collect all data.
-- Conduct analysis and try different models.
-- Present results.
-
-:::
-::: {.column width="60%"}
-
-```{r image2, out.width='100%'}
-# Source : https://pixabay.com/images/id-4196725/
-image_1 <- image_read('bike-sharing-4196725_1920.jpg')
-plot(image_1)
-```
-
-:::
-::::::
-
-
-## Results and Deliverable
+## (Initial) Results and Deliverable
 :::::: {.columns}
 ::: {.column width="40%"}
 
@@ -548,3 +549,100 @@ plot(image_1)
 
 :::
 ::::::
+
+## Intermediate Results - perhaps we are not exploring the most relevant problem
+:::::: {.columns}
+::: {.column width="40%"}
+```{r}
+fleet_size <- nrow(stat %>% select(`Bike number`) %>% unique(.) )
+```
+
+However, when further analysis has been conducted, it has become apparent that the previous problem statement is **not** relevant : the fleet (`r sprintf("%.0f %%", fleet_size) ` bicycles) exceeds by far its daily demand. 
+
+Taking the above into consideration, perhaps a better problem to understand is how the weather conditions affect demand in each individual station, to make better placement decisions each day.
+
+:::
+::: {.column width="60%"}
+```{r}
+
+bikes_per_day<-trip_data %>%
+          mutate(Date=as_date(`Start date`)) %>%
+  group_by(Date,`Bike number`) %>%
+  summarise(n=n(),.groups = 'drop') %>% ungroup() %>%
+  select(-n) %>% group_by(Date) %>%
+  summarise(bikes=n(),.groups = 'drop') %>% ungroup()
+
+
+dl <- daily_demand %>% group_by(Date) %>%
+  summarise(trips=sum(trips),.groups = 'drop') %>%
+  ungroup() %>%
+  left_join(bikes_per_day,by="Date")
+
+dl %>% ggplot(aes(trips,bikes)) + geom_point(color="lightblue") +
+  geom_hline(yintercept=fleet_size, linetype="dashed", color = "red") +
+  theme_fivethirtyeight() +
+  labs(title="Daily trips and unique biclycle use - years 2017 and 2018",
+       x="Daily Trips",
+       y="Unique number of bikes used each day") +
+  theme(legend.position = "bottom",
+        plot.title = element_text(size=12),
+        axis.title.x = element_text(size = 10),
+        axis.text.x = element_text(angle = 0, hjust = 1,size = 8),
+        axis.title.y = element_text(size = 10),
+        axis.text.y = element_text(size = 8),
+        strip.text.x = element_text(size = 8),
+        strip.text.y = element_text(size = 8, angle = 90),
+        legend.title=element_text(size=8),
+        legend.text=element_text(size=8)) +
+  scale_y_continuous(labels=function(x) format(x, big.mark = ",", scientific = FALSE))+
+ scale_x_continuous(labels=function(x) format(x, big.mark = ",", scientific = FALSE))
+
+```
+
+:::
+::::::
+
+## Intermediate Results - Other Opportunities
+:::::: {.columns}
+::: {.column width="40%"}
+
+In addition, such big difference between fleet size and demand opens a window to explore other options to improve the service such as:
+
+* Reduce the fleet size and optimise costs.
+* Use excess capacity to deploy "pop up" stations on high usage events and locations (e.g. offer them as a public transport alternative during massive events, bring bikes to parks in spring).
+* Explore other use models - e.g. day-long and weekend rentals, allowing registered users to take bicycles home overnight.
+
+
+:::
+::: {.column width="60%"}
+
+```{r image4, out.width='100%'}
+# Source : https://pixabay.com/images/id-4196725/
+image_1 <- image_read('bike-sharing-4196725_1920.jpg')
+plot(image_1)
+```
+
+:::
+::::::
+
+## Next Steps
+:::::: {.columns}
+::: {.column width="40%"}
+
+The next steps on this journey are:
+
+- Re-do analysis, per station.
+- Present results.
+
+:::
+::: {.column width="60%"}
+
+```{r image2, out.width='100%'}
+# Source : https://pixabay.com/images/id-4196725/
+image_1 <- image_read('bike-sharing-4196725_1920.jpg')
+plot(image_1)
+```
+
+:::
+::::::
+

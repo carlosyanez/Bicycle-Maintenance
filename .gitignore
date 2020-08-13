@@ -14,3 +14,5 @@ weather/.DS_Store
 .RData
 *.png
 cycling-659778_1920.jpg
+model_2.Rmd
+model.Rmd
