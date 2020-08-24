@@ -46,6 +46,9 @@ seasons <- tibble(season=c("DJF","MAM","JJA","SON"),
 
 
 ```{r load_data, echo=FALSE, include=FALSE}
+if(file.exists("data.RData")){
+    load("data.RData")
+}else{
 if(file.exists("trip_data.RDS")){
   trip_data <- readRDS("trip_data.RDS")
   
@@ -103,7 +106,6 @@ if(file.exists("trip_data.RDS")){
   }
   
   saveRDS(trip_data,"trip_data.RDS")
-}
 
 
 if(file.exists("weather_data.RDS")){
@@ -190,8 +192,6 @@ if(file.exists("weather_data.RDS")){
   saveRDS(weather_data,"weather_data.RDS")
 }
 
-
-
 #No need to rds ..local small file, manually created from google restuls
 public_holidays <- read_csv("public_holidays.csv")
 
@@ -206,16 +206,6 @@ if(file.exists("bike_stations.RDS")){
   saveRDS(bike_stations,"bike_stations.RDS")
 }
 
-#rm(j,files)
-
-
-```
-
-## Introduction and Purpose
-:::::: {.columns}
-::: {.column width="60%"}
-
-```{r, echo=FALSE, include=FALSE}
 station_daily <- trip_data %>%
   mutate(Date=as_date(`Start date`),
          `Start station number`=as.numeric(`Start station number`)) %>% 
@@ -253,11 +243,176 @@ workshop<- station_daily %>% filter(`Start station number`==0) %>%
 
 
 stat <- trip_data %>% mutate(year=lubridate::year(`Start date`)) %>% filter(year==2017)
+
+
+ daily_demand <- trip_data %>% mutate(Date =as_date(`Start date`)) %>% 
+  group_by(Date,`Member type`) %>% summarise(n=n(),.groups = 'drop') %>%
+  pivot_wider(id_cols = Date,names_from = `Member type`,values_from = n) %>%
+   left_join(public_holidays,by="Date") %>%
+  mutate(Total=Casual+Member,
+         day=lubridate::wday(Date,label=TRUE),
+         weekend=if_else((day %in% c("Sat","Sun")),TRUE,FALSE),
+         season=metR::season(month(Date)),
+         public_holiday=if_else(is.na(Event),FALSE,TRUE,missing=FALSE)
+         ) %>%
+  left_join(seasons,by="season") %>%
+  mutate(season=season_name) %>% select(-season_name) %>%
+  left_join(weather_data,by="Date") %>%
+  mutate(too_hot=(TMAX>=35 | TAVG>=30),
+         too_cold=(TMIN<=-5 | TAVG<=4),
+         too_windy=(AWND>30 |WSF2 >=50),
+         too_rainy=(PRCP>15 |SNOW >10),
+         too_bad = if_else( WT01>4 |
+                     WT02>0 |
+                     WT03>2 |
+                     WT04>4 |
+                     WT05>0 |
+                     WT06>0 | 
+                     WT08>5 |
+                     WT09>3 |
+                     WT11>0, TRUE,FALSE),
+         Good_Weather=ifelse(!too_hot & !too_cold & !too_windy & !too_rainy & !too_bad,'Good','Bad')
+  ) %>%
+   pivot_longer(cols=c("Casual","Member"),names_to = "type", values_to = "trips") %>%
+   select(-Total) 
+ 
+daily_demand$Good_Weather <-  factor(daily_demand$Good_Weather, levels=c('Good','Bad'))
+daily_demand$type <-  factor(daily_demand$type, levels=c('Casual','Member'))
+daily_demand$season <-  factor(daily_demand$season, levels=c('winter','spring','summer','autumn'))
+
+bikes_per_day<-trip_data %>%
+          mutate(Date=as_date(`Start date`)) %>%
+  group_by(Date,`Bike number`) %>%
+  summarise(n=n(),.groups = 'drop') %>% ungroup() %>%
+  select(-n) %>% group_by(Date) %>%
+  summarise(bikes=n(),.groups = 'drop') %>% ungroup()
+
+
+station_capacity <- station_data$data$stations %>% select(Station=short_name,capacity,lon,lat)
+rm(station_data)
+
+bikes_per_station_start <- trip_data %>%
+            mutate(Date =as_date(`Start date`)) %>%
+            group_by(`Start station number`,Date,`Bike number`) %>%
+  summarise(n=n(),duration=mean(Duration),.groups = 'drop') %>% ungroup() %>% select(-n) %>%
+  group_by(`Start station number`,Date) %>% 
+  summarise(bikes=n(),duration=mean(duration),.groups = 'drop') %>% ungroup() %>%
+  select(Date,Station=`Start station number`,start_bikes=bikes,duration) 
+
+bikes_per_station_start <- bikes_per_station_start %>% 
+                           left_join(station_capacity,by="Station") %>%
+                           filter(!is.na(capacity)) %>%
+                            mutate(start_cap=round(start_bikes/capacity,2))
+
+
+stations <- bikes_per_station_start %>% pull(Station) %>% unique(.)
+
+
+if(exists("station_demand_mod")){
+ rm(station_demand_mod) 
+}
+for(i in 1:length(stations)){
+station_demand_mod_i <- weather_data %>%
+                      left_join((bikes_per_station_start %>% 
+                                filter(Station %in% stations[i])),
+                                by="Date") %>%
+                      mutate(start_cap=ifelse(is.na(start_cap),0,start_cap),
+                             Station=ifelse(is.na(Station),stations[i],Station)
+                               ) 
+
+if(exists("station_demand_mod")){
+  station_demand_mod <- rbind(station_demand_mod,station_demand_mod_i)
+}else{
+  station_demand_mod <- station_demand_mod_i
+  
+}
+}
+
+rm(i,stations,station_demand_mod_i)
+station_demand_mod_backup <- station_demand_mod
+
+station_filter <- station_demand_mod_backup %>% 
+                  filter(!(start_cap==0)) %>%
+                  group_by(Station) %>%
+                  summarise(n=n(),.groups = 'drop') %>%
+                  arrange(n) 
+
+station_demand_mod_remnant <- station_demand_mod_backup %>% 
+                              left_join(station_filter,by="Station") %>%
+                              mutate(n=ifelse(is.na(n),0,n))%>%
+                              filter(n<0)
+
+station_demand_mod <-  station_demand_mod_backup %>%
+                       filter(!(Station %in% (station_demand_mod_remnant %>%
+                                                pull(Station) %>% unique(.)))) 
+
+
+resolution <- 0.3
+
+station_demand_mod <- station_demand_mod %>%
+                      left_join(station_demand_mod %>%
+                                group_by(Station) %>% 
+                                summarise(avg_cap=round(mean(start_cap),2), .groups = 'drop'),
+                                by="Station") %>%
+                      mutate(start_cap_m=start_cap - avg_cap) %>%
+                      mutate(start_cap_m=round(start_cap_m/resolution)*resolution)
+
+
+
+station_demand_mod <- station_demand_mod %>%
+                      left_join(public_holidays,by="Date") %>%
+                      mutate(condition1=WT04+WT05+WT06+WT08+WT09+WT11) %>%
+                      mutate(day=lubridate::wday(Date,label=TRUE),
+                            weekend=if_else((day %in% c("Sat","Sun")),TRUE,FALSE),
+                            month=lubridate::month(Date,label=TRUE),
+                            season=metR::season(month(Date)),
+                            public_holiday=if_else(is.na(Event),FALSE,TRUE,missing=FALSE)
+                            ) %>%
+                      left_join(seasons,by="season") %>%
+                      mutate(season=season_name) %>% select(-season_name) %>%
+                      mutate(workday=as.numeric(!public_holiday & !weekend)) 
+
+
+station_demand_mod1 <- station_demand_mod
+
+
+station_profile <- station_demand_mod1 %>% group_by(Station) %>%  summarise(min=min(start_cap_m),
+                                                              max=max(start_cap_m),
+                                                              median=median(start_cap_m),
+                                                              zeros=sum(start_cap==0),
+                                                              sd=sd(start_cap_m),
+                                                              .groups = 'drop') %>% ungroup() 
+
+
+station_profile1 <- station_profile
+
+cluster_n <-8
+sp <- station_profile1 %>% select(-Station)
+
+###The, we run GMM as per the manual
+fit <- kmeans(sp, cluster_n, iter.max = 50, nstart = 1)
+
+station_profile1$group <- fit$cluster
+
+station_profile <- station_profile %>%
+                   left_join(station_profile1 %>% select(Station,group),by="Station") %>%
+                  mutate(group=ifelse(is.na(group),cluster_n+1,group)) %>%
+                   select(Station,group)
+  
+
+
+
+
+}
 trips_stat <- round(nrow(stat)/10^6,2)
 bike_fleet <- length(stat %>% pull(`Bike number`) %>% unique(.))
+}
 
 ```
 
+## Introduction and Purpose
+:::::: {.columns}
+::: {.column width="60%"}
 
 As the Council-owned bike sharing scheme for the City, *BikeShare* has the mission to provide a reliable, cost-effective bicycle sharing service across the Metropolitan area.  In 2017 alone, *BikeShare* served over 
 `r sprintf("%.1f %%", trips_stat)` million trips with a fleet of `r formatC(bike_fleet, format="f", big.mark=",", digits=0)` bicycles.
@@ -271,7 +426,6 @@ In order to address, this BikeShare can tap into the existing operational data a
 ::: {.column width="40%"}
 
 ```{r traffic, echo=FALSE,include=FALSE}
-
 
 
 fill.breaks <- quantile(station_demand$daily_avg,seq(0,1,0.2)) 
@@ -312,6 +466,144 @@ map
 :::
 ::::::
 
+## Data analysis of fleet and station  utilisation
+
+:::::: {.columns}
+::: {.column width="40%"}
+```{r}
+fleet_size <- nrow(stat %>% select(`Bike number`) %>% unique(.) )
+zeros_stat <- round(nrow(station_profile1 %>% filter(zeros<=20))*100/nrow(station_profile1),0)
+zeros_stat2 <-   round(nrow(station_profile1 %>%
+                              filter(zeros>=nrow(weather_data)*1/2))*100/nrow(station_profile1),0)
+ quarter_stat <-   round(nrow(station_demand_mod_backup %>% group_by(Station) %>% summarise(avg_cap=mean(start_cap),.groups="drop") %>%
+  filter(avg_cap<0.25))/nrow(station_demand_mod_backup %>% select(Station)%>% unique(.))*100,0)           
+```
+
+However, when further analysis has been conducted, it has become apparent that the previous problem statement is **not** relevant:
+
+* The fleet (`r sprintf("%.0f %%", fleet_size) ` bicycles) exceeds by far its daily demand. 
+* Only a fraction (`r zeros_stat` %) of all stations are used daily (or nearly daily). Over a quarter (`r zeros_stat2 ` %) of all stations are half of the time or less. 
+* Nearly `r quarter_stat` percent of the stations operate at an average utilisation of less than 25%, while a similar amount operates with an average utilisation of over 75%.
+
+
+:::
+::: {.column width="60%"}
+```{r}
+
+
+dl <- daily_demand %>% group_by(Date) %>%
+  summarise(trips=sum(trips),.groups = 'drop') %>%
+  ungroup() %>%
+  left_join(bikes_per_day,by="Date")
+
+graph1 <- dl %>% ggplot(aes(trips,bikes)) + geom_point(color="lightblue") +
+  geom_hline(yintercept=fleet_size, linetype="dashed", color = "red") +
+  theme_fivethirtyeight() +
+  labs(title="Daily trips and unique bicycle use - 2017 and 2018",
+       x="Daily Trips",
+       y="Unique number of bikes used each day") +
+  theme(legend.position = "bottom",
+        plot.title = element_text(size=12),
+        axis.title.x = element_text(size = 10),
+        axis.text.x = element_text(angle = 0, hjust = 1,size = 8),
+        axis.title.y = element_text(size = 10),
+        axis.text.y = element_text(size = 8),
+        strip.text.x = element_text(size = 8),
+        strip.text.y = element_text(size = 8, angle = 90),
+        legend.title=element_text(size=8),
+        legend.text=element_text(size=8)) +
+  scale_y_continuous(labels=function(x) format(x, big.mark = ",", scientific = FALSE))+
+ scale_x_continuous(labels=function(x) format(x, big.mark = ",", scientific = FALSE))
+
+graph2 <- station_profile1 %>% ggplot(aes(zeros))+
+   geom_histogram( colour="navy", fill="lightblue",binwidth = 200) +
+  theme_fivethirtyeight() +
+  labs(title="Distribution of Stations by number of days with zero used",
+       x="Number of day with zero bikes used",
+       y="Unique bike stations") +
+  theme(legend.position = "bottom",
+        plot.title = element_text(size=12),
+        axis.title.x = element_text(size = 10),
+        axis.text.x = element_text(angle = 0, hjust = 1,size = 8),
+        axis.title.y = element_text(size = 10),
+        axis.text.y = element_text(size = 8),
+        strip.text.x = element_text(size = 8),
+        strip.text.y = element_text(size = 8, angle = 90),
+        legend.title=element_text(size=8),
+        legend.text=element_text(size=8)) +
+  scale_y_continuous(labels=function(x) format(x, big.mark = ",", scientific = FALSE))+
+ scale_x_continuous(labels=function(x) format(x, big.mark = ",", scientific = FALSE))
+
+graph1 / graph2
+```
+
+:::
+::::::
+
+## Further Analysis : There is a geographic station gap.
+:::::: {.columns}
+::: {.column width="60%"}
+
+In order to perform further analysis, bike stations were clustered using  their key statistical measures. After reviewing the results, they are were aggregated into three distinct usage groups:
+
+* **High use**. These stations are frequently use and during summer they may carry several times their capacity. They exhibit the highest seasonality and variation. They are mostly located in the inner city and dense suburban pockets, and they are close to each other.
+* **Medium use**. Stations with lower average usage compared with the high use group. They have a slightly lower seasonality, They are located in inner city districts (sometime opposite the street from high use locations) or along peri-urban commuting corridors and dense near-city suburban centres.
+* **Low use**. These stations have very low usages, and many of them go unused for days. They are located in the city but also  peripheral suburbs. The low volume of data makes it difficult to forecast demand.
+
+It is interesting to note that stations of the three categories share the inner city. This makes any demand prediction challenging, due to utilisation influence by other variables difficult to quantify, such as proximity to key landmark of public transport exit.
+
+
+:::
+::: {.column width="40%"}
+
+```{r echo=FALSE, warning=FALSE,message=FALSE}
+map_data <- station_capacity %>% 
+  left_join(station_profile1, by="Station") %>%
+  mutate(business_group=if_else(group==7,"high use",
+                                ifelse(group==4,"medium use","low use"),
+                                missing="low use"))
+
+bbox <- make_bbox(LONGITUDE, LATITUDE, station_demand, f = 0.005)
+m <- get_map(bbox, source = "stamen", zoom = 13)
+
+map <- ggmap(m)  +
+  geom_point(data=map_data,aes(x = lon, y = lat,colour=business_group)) +
+  labs(title="Station Groups") +
+    theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.title.y=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank()) +
+      scale_color_discrete() + facet_wrap(.~ business_group)
+
+map
+```
+:::
+::::::
+
+## Results and recommendations
+
+Based on the previous analysis, we can confirm that maintenance planning and demand utilisation are not priority items to address, given the existing fleet size and location in each station. 
+
+Nevertheless, it has become clear that the points to tackle are the under-utilisation of the fleet and disparate station usage. Therefore, we present the below recommendations:
+
+* Address the large number of spares by reducing the fleet or leveraging this asset in the below recommendations.
+* Conduct experiments to redirect demand in inner city to medium and low use stations.
+* After redirection attempts, optimise location and size or inner city stations. Optimise the peripheral network.
+* Use excess capacity to deploy "pop up" stations on high usage events and locations (e.g. offer them as a public transport alternative during massive events, bring bikes to parks in spring).
+* Explore innovate bike use models/service offerings, such as:
+** Multi-day (weekend) trips for registered users.
+** Allow suburban commuters to take bike home overnight - taking advantage of excess bikes.
+** Allow bikes to be parked on regular bike parking spots - to reduce walking distances.
+** Explore park&ride scheme with car parks in the inner city fringe.
+** Explore ride & train scheme for suburbs.
+
+
+## Appendix
+
+The below slides were used in previous stages and are presented here for reference purposes
+
 ## Fleet maintenance volumes and windows need to be carefully chosen
 :::::: {.columns}
 ::: {.column width="40%"}
@@ -329,40 +621,7 @@ In order to **<span style='color: brown;'>provide a good service</span>** for th
 text_value <-   "**<span style='color: brown;'>Challenge</span>**: Using data analytics, we can leverage the **<span style='color: brown;'>weather forecast </span>** to optimise the fleet **<span style='color: brown;'>maintenace without compromising availibilty SLAs</span>**."
 
 
- daily_demand <- trip_data %>% mutate(Date =as_date(`Start date`)) %>% 
-  group_by(Date,`Member type`) %>% summarise(n=n(),.groups = 'drop') %>%
-  pivot_wider(id_cols = Date,names_from = `Member type`,values_from = n) %>%
-   left_join(public_holidays,by="Date") %>%
-  mutate(Total=Casual+Member,
-         day=lubridate::wday(Date,label=TRUE),
-         weekend=if_else((day %in% c("Sat","Sun")),TRUE,FALSE),
-         season=metR::season(month(Date)),
-         public_holiday=if_else(is.na(Event),FALSE,TRUE,missing=FALSE)
-         ) %>%
-  left_join(seasons,by="season") %>%
-  mutate(season=season_name) %>% select(-season_name) %>%
-  left_join(weather_data,by="Date") %>%
-  mutate(too_hot=(TMAX>=35 | TAVG>=30),
-         too_cold=(TMIN<=-5 | TAVG<=4),
-         too_windy=(AWND>30 |WSF2 >=50),
-         too_rainy=(PRCP>15 |SNOW >10),
-         too_bad = if_else( WT01>4 |
-                     WT02>0 |
-                     WT03>2 |
-                     WT04>4 |
-                     WT05>0 |
-                     WT06>0 | 
-                     WT08>5 |
-                     WT09>3 |
-                     WT11>0, TRUE,FALSE),
-         Good_Weather=ifelse(!too_hot & !too_cold & !too_windy & !too_rainy & !too_bad,'Good','Bad')
-  ) %>%
-   pivot_longer(cols=c("Casual","Member"),names_to = "type", values_to = "trips") %>%
-   select(-Total) 
- 
-daily_demand$Good_Weather <-  factor(daily_demand$Good_Weather, levels=c('Good','Bad'))
-daily_demand$type <-  factor(daily_demand$type, levels=c('Casual','Member'))
-daily_demand$season <-  factor(daily_demand$season, levels=c('winter','spring','summer','autumn'))
+
 
 
 g <-daily_demand %>%
@@ -416,6 +675,7 @@ rm(g,t,layout,text_value)
 ```
 :::
 ::::::
+
 
 ## By addressing uneven bike utilisation, it is possible to extend the life of the fleet
 :::::: {.columns}
@@ -494,7 +754,6 @@ To achieve the objectives, the below data needs to be collected:
 
 Based on the data, the below metrics will be generated:
 
-
 ```{r table}
 
 table_data <- data.frame(Metric=c("Daily Service Capacity",
@@ -531,118 +790,7 @@ These metrics (combined with spontaneous failure rates) should serve as input fo
 :::
 ::::::
 
-## (Initial) Results and Deliverable
-:::::: {.columns}
-::: {.column width="40%"}
+## Data Sources
 
-The generated metrics will be used to generated a day-by-day maintenance plan, by matching the optimal number of bicycle to service every day with a suggestion of which assets need to be service each day. This plan will include an allowance for unexpected service needs. 
-This model will require weekly updates.
-
-:::
-::: {.column width="60%"}
-
-```{r image3, out.width='100%'}
-# Source : https://pixabay.com/images/id-659778/
-image_1 <- image_read('cycling-659778_1920.jpg')
-plot(image_1)
-```
-
-:::
-::::::
-
-## Intermediate Results - perhaps we are not exploring the most relevant problem
-:::::: {.columns}
-::: {.column width="40%"}
-```{r}
-fleet_size <- nrow(stat %>% select(`Bike number`) %>% unique(.) )
-```
-
-However, when further analysis has been conducted, it has become apparent that the previous problem statement is **not** relevant : the fleet (`r sprintf("%.0f %%", fleet_size) ` bicycles) exceeds by far its daily demand. 
-
-Taking the above into consideration, perhaps a better problem to understand is how the weather conditions affect demand in each individual station, to make better placement decisions each day.
-
-:::
-::: {.column width="60%"}
-```{r}
-
-bikes_per_day<-trip_data %>%
-          mutate(Date=as_date(`Start date`)) %>%
-  group_by(Date,`Bike number`) %>%
-  summarise(n=n(),.groups = 'drop') %>% ungroup() %>%
-  select(-n) %>% group_by(Date) %>%
-  summarise(bikes=n(),.groups = 'drop') %>% ungroup()
-
-
-dl <- daily_demand %>% group_by(Date) %>%
-  summarise(trips=sum(trips),.groups = 'drop') %>%
-  ungroup() %>%
-  left_join(bikes_per_day,by="Date")
-
-dl %>% ggplot(aes(trips,bikes)) + geom_point(color="lightblue") +
-  geom_hline(yintercept=fleet_size, linetype="dashed", color = "red") +
-  theme_fivethirtyeight() +
-  labs(title="Daily trips and unique biclycle use - years 2017 and 2018",
-       x="Daily Trips",
-       y="Unique number of bikes used each day") +
-  theme(legend.position = "bottom",
-        plot.title = element_text(size=12),
-        axis.title.x = element_text(size = 10),
-        axis.text.x = element_text(angle = 0, hjust = 1,size = 8),
-        axis.title.y = element_text(size = 10),
-        axis.text.y = element_text(size = 8),
-        strip.text.x = element_text(size = 8),
-        strip.text.y = element_text(size = 8, angle = 90),
-        legend.title=element_text(size=8),
-        legend.text=element_text(size=8)) +
-  scale_y_continuous(labels=function(x) format(x, big.mark = ",", scientific = FALSE))+
- scale_x_continuous(labels=function(x) format(x, big.mark = ",", scientific = FALSE))
-
-```
-
-:::
-::::::
-
-## Intermediate Results - Other Opportunities
-:::::: {.columns}
-::: {.column width="40%"}
-
-In addition, such big difference between fleet size and demand opens a window to explore other options to improve the service such as:
-
-* Reduce the fleet size and optimise costs.
-* Use excess capacity to deploy "pop up" stations on high usage events and locations (e.g. offer them as a public transport alternative during massive events, bring bikes to parks in spring).
-* Explore other use models - e.g. day-long and weekend rentals, allowing registered users to take bicycles home overnight.
-
-
-:::
-::: {.column width="60%"}
-
-```{r image4, out.width='100%'}
-# Source : https://pixabay.com/images/id-4196725/
-image_1 <- image_read('bike-sharing-4196725_1920.jpg')
-plot(image_1)
-```
-
-:::
-::::::
-
-## Next Steps
-:::::: {.columns}
-::: {.column width="40%"}
-
-The next steps on this journey are:
-
-- Re-do analysis, per station.
-- Present results.
-
-:::
-::: {.column width="60%"}
-
-```{r image2, out.width='100%'}
-# Source : https://pixabay.com/images/id-4196725/
-image_1 <- image_read('bike-sharing-4196725_1920.jpg')
-plot(image_1)
-```
-
-:::
-::::::
-
+- Bike scheme data: https://www.capitalbikeshare.com/system-data
+- Weather data: https://www.ncdc.noaa.gov/cdo-web/search;jsessionid=FC6D9E3A1F49486E29E7130142A60038

@@ -1,0 +1,629 @@
+
+Rough (not documented) analysis
+
+
+```{r}
+station_data <- jsonlite::fromJSON("https://gbfs.capitalbikeshare.com/gbfs/en/station_information.json")
+
+station_capacity <- station_data$data$stations %>% select(Station=short_name,capacity,lon,lat)
+rm(station_data)
+```
+
+
+
+
+
+```{r}
+bikes_per_station_start <- trip_data %>%
+            mutate(Date =as_date(`Start date`)) %>%
+            group_by(`Start station number`,Date,`Bike number`) %>%
+  summarise(n=n(),duration=mean(Duration),.groups = 'drop') %>% ungroup() %>% select(-n) %>%
+  group_by(`Start station number`,Date) %>% 
+  summarise(bikes=n(),duration=mean(duration),.groups = 'drop') %>% ungroup() %>%
+  select(Date,Station=`Start station number`,start_bikes=bikes,duration) 
+
+bikes_per_station_start <- bikes_per_station_start %>% 
+                           left_join(station_capacity,by="Station") %>%
+                           filter(!is.na(capacity)) %>%
+                            mutate(start_cap=round(start_bikes/capacity,2))
+
+
+stations <- bikes_per_station_start %>% pull(Station) %>% unique(.)
+
+
+if(exists("station_demand_mod")){
+ rm(station_demand_mod) 
+}
+for(i in 1:length(stations)){
+station_demand_mod_i <- weather_data %>%
+                      left_join((bikes_per_station_start %>% 
+                                filter(Station %in% stations[i])),
+                                by="Date") %>%
+                      mutate(start_cap=ifelse(is.na(start_cap),0,start_cap),
+                             Station=ifelse(is.na(Station),stations[i],Station)
+                               ) 
+
+if(exists("station_demand_mod")){
+  station_demand_mod <- rbind(station_demand_mod,station_demand_mod_i)
+}else{
+  station_demand_mod <- station_demand_mod_i
+  
+}
+}
+
+rm(i,stations,station_demand_mod_i)
+station_demand_mod_backup <- station_demand_mod
+```
+
+
+```{r}
+station_demand_mod_backup %>% ggplot(aes(x=Station,y=start_cap)) + geom_boxplot()
+```
+
+
+```{r}
+
+
+station_filter <- station_demand_mod_backup %>% 
+                  filter(!(start_cap==0)) %>%
+                  group_by(Station) %>%
+                  summarise(n=n(),.groups = 'drop') %>%
+                  arrange(n) 
+
+station_demand_mod_remnant <- station_demand_mod_backup %>% 
+                              left_join(station_filter,by="Station") %>%
+                              mutate(n=ifelse(is.na(n),0,n))%>%
+                              filter(n<0)
+
+station_demand_mod <-  station_demand_mod_backup %>%
+                       filter(!(Station %in% (station_demand_mod_remnant %>%
+                                                pull(Station) %>% unique(.)))) 
+
+
+```
+
+
+
+```{r}
+
+resolution <- 0.3
+
+station_demand_mod <- station_demand_mod %>%
+                      left_join(station_demand_mod %>%
+                                group_by(Station) %>% 
+                                summarise(avg_cap=round(mean(start_cap),2), .groups = 'drop'),
+                                by="Station") %>%
+                      mutate(start_cap_m=start_cap - avg_cap) %>%
+                      mutate(start_cap_m=round(start_cap_m/resolution)*resolution)
+
+#station_demand_mod <- station_demand_mod %>% 
+#                       mutate(start_cap_m=ifelse(start_cap_m>=1 & start_cap_m<2,start_cap_m,
+#                                                 ifelse(start_cap_m>=2,2,
+#                                                        ifelse(start_cap_m<=-1 & start_cap_m>-2,-1,
+#                                                               ifelse(start_cap_m<=-2,-2,start_cap_m)
+#                                                               ))))
+
+
+station_demand_mod <- station_demand_mod %>%
+                      left_join(public_holidays,by="Date") %>%
+                      mutate(condition1=WT04+WT05+WT06+WT08+WT09+WT11) %>%
+                      mutate(day=lubridate::wday(Date,label=TRUE),
+                            weekend=if_else((day %in% c("Sat","Sun")),TRUE,FALSE),
+                            month=lubridate::month(Date,label=TRUE),
+                            season=metR::season(month(Date)),
+                            public_holiday=if_else(is.na(Event),FALSE,TRUE,missing=FALSE)
+                            ) %>%
+                      left_join(seasons,by="season") %>%
+                      mutate(season=season_name) %>% select(-season_name) %>%
+                      mutate(workday=as.numeric(!public_holiday & !weekend)) 
+
+
+station_demand_mod1 <- station_demand_mod
+  
+```
+
+
+
+
+```{r}
+station_profile <- station_demand_mod1 %>% group_by(Station) %>%  summarise(min=min(start_cap_m),
+                                                              max=max(start_cap_m),
+                                                              median=median(start_cap_m),
+                                                              zeros=sum(start_cap==0),
+                                                              sd=sd(start_cap_m),
+                                                              .groups = 'drop') %>% ungroup() 
+
+#%>%
+#  left_join(station_demand_mod1 %>% group_by(Station,season) %>%
+#                       summarise(avg=mean(start_cap),.groups = 'drop') %>%
+#                       ungroup() %>%
+#                        mutate(key=paste("avg",season,sep="_")) %>% select(Station,key,avg) %>%
+#                       pivot_wider(names_from = key,values_from=avg) %>%
+#                       mutate(seasonality=ifelse(avg_summer==0,0,avg_winter/avg_summer)) %>%
+#                       select(Station,seasonality),
+#          by="Station")
+#%>%
+#left_join(station_demand_mod1 %>% group_by(Station,workday) %>%
+ #                       summarise(avg=mean(start_cap_m),.groups = 'drop') %>%
+  #                      ungroup() %>%
+   #                     mutate(key=paste("avg",workday,sep="_")) %>% select(Station,key,avg) %>%
+    #                   pivot_wider(names_from = key,values_from=avg),
+     #     by="Station")
+
+
+station_profile1 <- station_profile
+
+cluster_n <-8
+sp <- station_profile1 %>% select(-Station)
+
+###The, we run GMM as per the manual
+fit <- kmeans(sp, cluster_n, iter.max = 50, nstart = 1)
+
+station_profile1$group <- fit$cluster
+
+station_profile <- station_profile %>%
+                   left_join(station_profile1 %>% select(Station,group),by="Station") %>%
+                  mutate(group=ifelse(is.na(group),cluster_n+1,group)) %>%
+                   select(Station,group)
+  
+
+
+#station_profile %>% ggplot(aes(group))+ geom_histogram()
+```
+
+```{r}
+station_profile1 %>% ggplot(aes(zeros))+
+   geom_histogram( colour="navy", fill="lightblue",binwidth = 200) +
+  theme_fivethirtyeight() +
+  labs(title="Distribution of Stations by number of days with zero used",
+       x="Number of day with zero bikes used",
+       y="Unique bike stations") +
+  theme(legend.position = "bottom",
+        plot.title = element_text(size=12),
+        axis.title.x = element_text(size = 10),
+        axis.text.x = element_text(angle = 0, hjust = 1,size = 8),
+        axis.title.y = element_text(size = 10),
+        axis.text.y = element_text(size = 8),
+        strip.text.x = element_text(size = 8),
+        strip.text.y = element_text(size = 8, angle = 90),
+        legend.title=element_text(size=8),
+        legend.text=element_text(size=8)) +
+  scale_y_continuous(labels=function(x) format(x, big.mark = ",", scientific = FALSE))+
+ scale_x_continuous(labels=function(x) format(x, big.mark = ",", scientific = FALSE))
+ #geom_density(alpha=.2, fill="#FF6666") 
+```
+
+
+
+```{r}
+station_profile %>% group_by(group) %>% summarise(stations=n(),.groups = 'drop') %>%
+  left_join(as_tibble(fit$centers) %>% mutate(group=row_number()),
+            by="group")
+
+
+```
+
+```{r}
+
+```
+
+
+```{r}
+station_demand_mod1 %>% 
+  left_join(station_profile, by="Station") %>% ggplot(aes(x=Station,y=start_cap)) + 
+  geom_point() + facet_wrap(group ~.) +
+  
+```
+
+```{r}
+
+map_data <- station_capacity %>% 
+  left_join(station_profile1, by="Station") %>%
+  mutate(business_group=if_else(group==7,"high use",
+                                ifelse(group==4,"medium use","low use"),
+                                missing="low use"))
+
+bbox <- make_bbox(LONGITUDE, LATITUDE, station_demand, f = 0.005)
+m <- get_map(bbox, source = "stamen", zoom = 13)
+
+map <- ggmap(m)  +
+  geom_point(data=map_data,aes(x = lon, y = lat,colour=as.character(business_group))) +
+  labs(title="Station Groups") +
+    theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.title.y=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank()) +
+      scale_color_discrete() 
+
+map
+```
+
+
+```{r}
+library(leaflet)
+library(crosstalk)
+
+pal <- colorBin("Spectral", domain = map_data$group, bins = 1:8) 
+
+
+leaflet(map_data) %>%  addTiles() %>%
+  addCircleMarkers(
+    color = ~pal(group),
+    stroke = FALSE, fillOpacity = 0.5
+  ) %>%
+  addLegend(pal = pal, values = 0:8, opacity = 1)
+```
+
+
+
+
+
+```{r}
+station_demand_mod %>% ggplot(aes(start_cap_m)) + geom_histogram(binwidth = 0.2)
+```
+
+
+
+
+```{r}
+
+if(exists("results")){rm(results)}
+if(exists("result_values")){rm(result_values)}
+paremeters <-vector(mode = "list", length = 0)
+
+for(i in 1:cluster_n){
+
+station_demand_mod <- station_demand_mod1 %>% 
+                      left_join(station_filter,by="Station") %>%
+                      left_join(station_profile,by="Station") %>%
+                      filter(group==i) %>%
+                      mutate(season_winter=(season=="winter"),
+                             season_autumn=(season=="autumn"),
+                             season_spring=(season=="spring"),
+                             season_summer=(season=="summer")
+                             )
+
+demand_traintest <-station_demand_mod %>% filter(year(Date) %in% c(2017,2018)) %>%
+                    mutate(start_cap_m2=as.factor(start_cap_m))
+
+traintest_split <- initial_split(demand_traintest)
+demand_train <-training(traintest_split)
+demand_test <-testing(traintest_split)
+
+demand_val <- station_demand_mod %>% filter(year(Date) %in% c(2019)) 
+
+tree_rec <- recipe(start_cap_m ~  workday+TMIN+TMAX+PRCP+
+        SNOW+season_winter + season_autumn + season_spring + season_summer,
+      data = demand_train) %>%
+  step_normalize(TMIN,TMAX,PRCP,SNOW)
+
+
+tree_prep <- prep(tree_rec)
+juiced <- juice(tree_prep)
+
+  
+
+ames_cv_folds <- 
+  juiced %>%  
+  rsample::vfold_cv(3)
+
+
+tune_spec <-  parsnip::boost_tree(
+    mode = "regression",
+    trees = 1000,
+    min_n = tune(),
+    tree_depth = tune(),
+    learn_rate = tune(),
+    loss_reduction = tune()
+  ) %>%
+    set_engine("xgboost", objective = "reg:squarederror")
+
+
+# grid specification
+xgboost_params <- 
+  dials::parameters(
+    min_n(),
+    tree_depth(),
+    learn_rate(),
+    loss_reduction()
+  )
+
+xgboost_grid <- 
+  dials::grid_max_entropy(
+    xgboost_params, 
+    size = 5
+  )
+
+
+tune_wf <- workflow() %>%
+  add_recipe(tree_rec) %>%
+  add_model(tune_spec)
+
+
+# hyperparameter tuning
+xgboost_tuned <- tune::tune_grid(
+  object = tune_wf,
+  resamples = ames_cv_folds,
+  grid = xgboost_grid,
+  metrics = yardstick::metric_set(rsq, mae),
+  control = tune::control_grid(verbose = TRUE)
+)
+
+xgboost_best_params <- xgboost_tuned %>%
+  tune::select_best("rsq")
+
+xgboost_model_final <- tune_spec %>% finalize_model(xgboost_best_params)
+
+
+lm_fit <- 
+  xgboost_model_final %>% 
+  fit(start_cap_m ~  workday+TMIN+TMAX+PRCP+
+        SNOW+season_winter + season_autumn + season_spring + season_summer,
+      data = juiced)
+
+tree_rec <- recipe(start_cap_m ~  workday+TMIN+TMAX+PRCP+
+        SNOW+season_winter + season_autumn + season_spring + season_summer,
+      data = demand_test) %>%
+  step_normalize(TMIN,TMAX,PRCP,
+        SNOW)
+
+tree_prep <- prep(tree_rec)
+juiced <- juice(tree_prep)
+
+pred <- predict(lm_fit, new_data =juiced)
+pred<-pred %>% mutate(pred=as.numeric(.pred)) %>% pull(pred)
+
+demand_test$pred <- pred
+demand_test<- demand_test %>%
+              mutate(error=as.numeric(pred)-as.numeric(start_cap_m)) %>%
+              mutate(error_cat=ifelse(error==0,"no error",
+                                      ifelse(error>0,"overshoot",
+                                                      "undershoot")))
+total <- nrow(demand_test)
+
+results_i <- demand_test %>% group_by(error_cat) %>%
+              summarise(n=n()/total,.groups = 'drop') %>% ungroup() %>%
+              mutate(group=i)
+
+result_values_i <- demand_test %>% select(Date,Station,start_cap_m,pred) %>%
+                   mutate(group=i)
+
+if(exists("results")){
+   results <- rbind(results,results_i)
+  
+}else{
+  results <- results_i
+}
+
+if(exists("result_values")){
+   result_values <- rbind(result_values,result_values_i)
+  
+}else{
+  result_values <- result_values_i
+}
+
+paremeters[i] <- xgboost_best_params
+
+
+}
+
+```
+
+```{r}
+eval1 <- result_values %>%  mutate(pred=round(pred/resolution)*resolution) %>%
+  mutate(error=as.numeric(pred)-as.numeric(start_cap_m)) %>%
+              mutate(error_cat=ifelse(error==0,"no error",
+                                      ifelse(error>0,"overshoot",
+                                                      "undershoot")))
+
+  eval1 %>% group_by(group,error_cat,) %>%
+              summarise(n=n(),.groups = 'drop') %>% ungroup() %>%
+                  left_join(eval1 %>% group_by(group) %>% summarise(total=n(),.groups = 'drop') %>% ungroup(),
+                      by="group")  %>%
+              mutate(n=n/total) %>% select(-total) %>%
+              pivot_wider(names_from = error_cat,values_from=n)
+  
+```
+
+
+```{r}
+eval1 %>% group_by(group,error_cat,start_cap_m,pred) %>% summarise(n=n(),.groups = 'drop') %>%
+  ungroup() %>%
+  ggplot(aes(x=start_cap_m,y=pred,size=n,color=error_cat)) +geom_point() + facet_wrap(group ~.)
+```
+
+
+```{r}
+save.image("data.RData")
+```
+
+
+
+```{r}
+if(exists("results7")){rm(results7)}
+if(exists("result_values7")){rm(result_values7)}
+paremeters7 <-vector(mode = "list", length = 0)
+
+for(i in 1:4){
+
+station_demand_mod <- station_demand_mod1 %>% 
+                      left_join(station_filter,by="Station") %>%
+                      left_join(station_profile,by="Station") %>%
+                      filter(group==7) %>%
+                      filter(season==seasons[i,]$season_name)
+
+demand_traintest <-station_demand_mod %>% filter(year(Date) %in% c(2017,2018)) %>%
+                    mutate(start_cap_m2=as.factor(start_cap_m))
+
+traintest_split <- initial_split(demand_traintest)
+demand_train <-training(traintest_split)
+demand_test <-testing(traintest_split)
+
+demand_val <- station_demand_mod %>% filter(year(Date) %in% c(2019)) 
+
+tree_rec <- recipe(start_cap_m ~  workday+TMIN+TMAX+PRCP+
+        SNOW+condition1,
+      data = demand_train) %>%
+  step_normalize(TMIN,TMAX,PRCP,SNOW)
+
+
+tree_prep <- prep(tree_rec)
+juiced <- juice(tree_prep)
+
+  
+
+ames_cv_folds <- 
+  juiced %>%  
+  rsample::vfold_cv(3)
+
+
+tune_spec <-  parsnip::boost_tree(
+    mode = "regression",
+    trees = 1000,
+    min_n = tune(),
+    tree_depth = tune(),
+    learn_rate = tune(),
+    loss_reduction = tune()
+  ) %>%
+    set_engine("xgboost", objective = "reg:squarederror")
+
+
+# grid specification
+xgboost_params <- 
+  dials::parameters(
+    min_n(),
+    tree_depth(),
+    learn_rate(),
+    loss_reduction()
+  )
+
+xgboost_grid <- 
+  dials::grid_max_entropy(
+    xgboost_params, 
+    size = 5
+  )
+
+
+tune_wf <- workflow() %>%
+  add_recipe(tree_rec) %>%
+  add_model(tune_spec)
+
+
+# hyperparameter tuning
+xgboost_tuned <- tune::tune_grid(
+  object = tune_wf,
+  resamples = ames_cv_folds,
+  grid = xgboost_grid,
+  metrics = yardstick::metric_set(rsq, mae),
+  control = tune::control_grid(verbose = TRUE)
+)
+
+xgboost_best_params <- xgboost_tuned %>%
+  tune::select_best("rsq")
+
+xgboost_model_final <- tune_spec %>% finalize_model(xgboost_best_params)
+
+
+lm_fit <- 
+  xgboost_model_final %>% 
+  fit(start_cap_m ~  workday+TMIN+TMAX+PRCP+
+        SNOW+condition1,
+      data = juiced)
+
+tree_rec <- recipe(start_cap_m ~  workday+TMIN+TMAX+PRCP+
+        SNOW+condition1,
+      data = demand_test) %>%
+  step_normalize(TMIN,TMAX,PRCP,
+        SNOW)
+
+tree_prep <- prep(tree_rec)
+juiced <- juice(tree_prep)
+
+pred <- predict(lm_fit, new_data =juiced)
+pred<-pred %>% mutate(pred=as.numeric(.pred)) %>% pull(pred)
+
+demand_test$pred <- pred
+demand_test<- demand_test %>%
+              mutate(error=as.numeric(pred)-as.numeric(start_cap_m)) %>%
+              mutate(error_cat=ifelse(error==0,"no error",
+                                      ifelse(error>0,"overshoot",
+                                                      "undershoot")))
+total <- nrow(demand_test)
+
+results7_i <- demand_test %>% group_by(error_cat) %>%
+              summarise(n=n()/total,.groups = 'drop') %>% ungroup() %>%
+              mutate(group=i)
+
+result_values7_i <- demand_test %>% select(Date,Station,start_cap_m,pred) %>%
+                   mutate(group=i)
+
+if(exists("results7")){
+   results7 <- rbind(results7,results7_i)
+  
+}else{
+  results7 <- results7_i
+}
+
+if(exists("result_values7")){
+   result_values7 <- rbind(result_values7,result_values7_i)
+  
+}else{
+  result_values7 <- result_values7_i
+}
+
+paremeters7[i] <- xgboost_best_params
+
+
+}
+
+
+```
+
+
+
+
+```{r}
+eval2 <- result_values7 %>%  mutate(pred=round(pred/resolution)*resolution) %>%
+  mutate(error=as.numeric(pred)-as.numeric(start_cap_m)) %>%
+              mutate(error_cat=ifelse(error==0,"no error",
+                                      ifelse(error>0,"overshoot",
+                                                      "undershoot"))) %>%
+            mutate(group=7+group/10)
+
+  eval2 %>% group_by(group,error_cat,) %>%
+              summarise(n=n(),.groups = 'drop') %>% ungroup() %>%
+                  left_join(eval2 %>% group_by(group) %>% summarise(total=n(),.groups = 'drop') %>% ungroup(),
+                      by="group")  %>%
+              mutate(n=n/total) %>% select(-total) %>%
+              pivot_wider(names_from = error_cat,values_from=n)
+  
+```
+
+
+```{r}
+result_values_complete <- rbind(result_values %>% filter(!(group==7)),
+                                result_values7) %>%
+                          mutate(pred=round(pred,1))
+
+eval3 <- result_values_complete %>%  mutate(pred=round(pred/resolution)*resolution) %>%
+  mutate(error=as.numeric(pred)-as.numeric(start_cap_m)) %>%
+              mutate(error_cat=ifelse(error==0,"no error",
+                                      ifelse(error>0,"overshoot",
+                                                      "undershoot"))) 
+
+  eval3 %>% group_by(group,error_cat,) %>%
+              summarise(n=n(),.groups = 'drop') %>% ungroup() %>%
+                  left_join(eval3 %>% group_by(group) %>% summarise(total=n(),.groups = 'drop') %>% ungroup(),
+                      by="group")  %>%
+              mutate(n=n/total) %>% select(-total) %>%
+              pivot_wider(names_from = error_cat,values_from=n)
+```
+
+
+```{r}
+save.image("data.RData")
+```
+
+
